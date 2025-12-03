@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""
+BlockHound Master JSON Creator
+==============================
+Processes scan results from blockhound.sh and creates a flat JSON structure
+optimized for Excel/Power Query import.
+
+Usage:
+    python3 create_master_json.py <scan_results_directory> [output.json]
+
+Example:
+    python3 create_master_json.py ~/scan_results
+    python3 create_master_json.py ~/scan_results custom_output.json
+
+Output Format:
+    Flat array of objects, each containing:
+    - subnet, host, port, protocol, state, service, version
+"""
+import json
+import sys
+from pathlib import Path
+
+
+def extract_tcp_data(tcp_data, subnet):
+    """Extract TCP port data from naabu results - handles both formats"""
+    results = []
+    if not tcp_data or tcp_data == []:
+        return results
+    
+    for entry in tcp_data:
+        if not isinstance(entry, dict):
+            continue
+            
+        # Format 1: Separate host and ports fields
+        if 'host' in entry and 'ports' in entry:
+            host = entry['host']
+            for port in entry['ports']:
+                results.append({
+                    'subnet': subnet,
+                    'host': host,
+                    'port': port,
+                    'protocol': 'TCP',
+                    'state': 'open',
+                    'service': '',
+                    'version': ''
+                })
+        
+        # Format 2: host contains "IP:PORT" as a single string
+        elif 'host' in entry:
+            host_port = entry['host']
+            if ':' in host_port:
+                parts = host_port.split(':', 1)
+                host = parts[0]
+                port = parts[1]
+                results.append({
+                    'subnet': subnet,
+                    'host': host,
+                    'port': port,
+                    'protocol': 'TCP',
+                    'state': 'open',
+                    'service': '',
+                    'version': ''
+                })
+    
+    return results
+
+
+def extract_udp_data(udp_data, subnet):
+    """Extract UDP port data from nmap XML (converted to JSON)"""
+    results = []
+    if not udp_data or 'nmaprun' not in udp_data:
+        return results
+    
+    nmaprun = udp_data['nmaprun']
+    
+    # Handle single host or multiple hosts
+    hosts = nmaprun.get('host', [])
+    if isinstance(hosts, dict):
+        hosts = [hosts]
+    elif not isinstance(hosts, list):
+        return results
+    
+    for host_data in hosts:
+        # Get IP address
+        address = host_data.get('address', {})
+        if isinstance(address, list):
+            address = address[0]
+        host_ip = address.get('@addr', 'unknown') if isinstance(address, dict) else 'unknown'
+        
+        # Get ports
+        ports_data = host_data.get('ports', {})
+        if not ports_data:
+            continue
+            
+        port_list = ports_data.get('port', [])
+        if isinstance(port_list, dict):
+            port_list = [port_list]
+        
+        for port in port_list:
+            if not isinstance(port, dict):
+                continue
+                
+            port_id = port.get('@portid', '')
+            protocol = port.get('@protocol', 'udp').upper()
+            
+            state_data = port.get('state', {})
+            state = state_data.get('@state', 'unknown') if isinstance(state_data, dict) else 'unknown'
+            
+            service_data = port.get('service', {})
+            service_name = service_data.get('@name', '') if isinstance(service_data, dict) else ''
+            service_product = service_data.get('@product', '') if isinstance(service_data, dict) else ''
+            service_version = service_data.get('@version', '') if isinstance(service_data, dict) else ''
+            
+            version_str = f"{service_product} {service_version}".strip() if service_product or service_version else ''
+            
+            results.append({
+                'subnet': subnet,
+                'host': host_ip,
+                'port': port_id,
+                'protocol': protocol,
+                'state': state,
+                'service': service_name,
+                'version': version_str
+            })
+    
+    return results
+
+
+def process_combined_json(json_file):
+    """Process a combined.json file and return flat results"""
+    try:
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"Error reading {json_file}: {e}", file=sys.stderr)
+        return []
+    
+    # Extract subnet name from path
+    subnet = json_file.parent.name
+    
+    # Process TCP and UDP data
+    tcp_data = data.get('tcp', [])
+    tcp_results = extract_tcp_data(tcp_data, subnet)
+    
+    udp_data = data.get('udp', {})
+    udp_results = extract_udp_data(udp_data, subnet)
+    
+    return tcp_results + udp_results
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 create_master_json.py <scan_results_directory> [output.json]")
+        print("Example: python3 create_master_json.py ~/scan_results")
+        print("\nCreates a flat JSON structure perfect for Excel import")
+        sys.exit(1)
+    
+    scan_dir = Path(sys.argv[1])
+    output_json = sys.argv[2] if len(sys.argv) > 2 else str(scan_dir / 'master_scan_results.json')
+    
+    if not scan_dir.exists():
+        print(f"Error: Directory {scan_dir} does not exist", file=sys.stderr)
+        sys.exit(1)
+    
+    # Find all combined.json files
+    json_files = list(scan_dir.rglob('combined.json'))
+    
+    if not json_files:
+        print(f"No combined.json files found in {scan_dir}", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"Found {len(json_files)} combined.json files")
+    print(f"Creating master JSON: {output_json}\n")
+    
+    all_results = []
+    
+    for json_file in sorted(json_files):
+        results = process_combined_json(json_file)
+        if results:
+            print(f"✓ {json_file.parent.name}: {len(results)} entries")
+        else:
+            print(f"○ {json_file.parent.name}: no open ports")
+        all_results.extend(results)
+    
+    # Write master JSON
+    with open(output_json, 'w') as f:
+        json.dump(all_results, f, indent=2)
+    
+    print(f"\n{'='*50}")
+    print(f"Master JSON created successfully!")
+    print(f"  Total entries: {len(all_results)}")
+    print(f"  Output file: {output_json}")
+    print(f"{'='*50}")
+    
+    if len(all_results) == 0:
+        print("\n⚠ No open ports found in any scan!")
+        print("This is normal for well-secured external subnets.")
+        print("Empty JSON array was created for documentation.")
+    else:
+        print(f"\nJSON Structure (flat array of objects):")
+        print(f"  Each entry contains: subnet, host, port, protocol, state, service, version")
+        print(f"\nTo import to Excel:")
+        print(f"  Data → Get Data → From File → From JSON → Select this file")
+        print(f"  Then: Convert to Table → Expand Column1 → Done!")
+
+
+if __name__ == '__main__':
+    main()
