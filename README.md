@@ -99,6 +99,24 @@ scan_results/
 - **Compliance auditing** — Verify expected services and detect unauthorized ports
 - **Attack surface mapping** — Document external-facing infrastructure
 
+## Post-Scan Analysis
+
+Use `create_master_json.py` to convert scan results into a flat JSON structure for Excel import:
+
+```bash
+python3 create_master_json.py ~/scan_results
+
+# Or specify custom output file
+python3 create_master_json.py ~/scan_results my_report.json
+```
+
+This creates a flat array where each entry contains: `subnet`, `host`, `port`, `protocol`, `state`, `service`, `version`
+
+**Import to Excel:**
+1. Data → Get Data → From File → From JSON
+2. Select the master JSON file
+3. Convert to Table → Expand columns → Done!
+
 ## Performance Tips
 
 - Start with lower rates on congested networks: `NAABU_RATE=3000`
